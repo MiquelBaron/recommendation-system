@@ -1,0 +1,20 @@
+[
+  {
+    "user_id": "postman-user-1",
+    "item_id": "item-5",
+    "event_type": "watch",
+    "timestamp": 1735689600.0
+  },
+  {
+    "user_id": "postman-user-1",
+    "item_id": "item-7",
+    "event_type": "click",
+    "timestamp": 1735693200.0
+  },
+  {
+    "user_id": "postman-user-1",
+    "item_id": "item-5",
+    "event_type": "like",
+    "timestamp": 1735696800.0
+  }
+]
