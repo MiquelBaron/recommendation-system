@@ -1,8 +1,9 @@
-"""User events (Redis Stream) and per-user embedding vectors (Redis strings).
+"""User events (Redis Stream) and per-user dual vectors (Redis strings).
 
 Redis events: stream ``user:events:stream`` with fields user_id, item_id, event_type, timestamp.
 Consumer group ``recommender-group`` is used by the recommendation worker (`XREADGROUP`).
-Embeddings: JSON per user key ``recommend:embedding:{user_id}``.
+Vectors: JSON per user key ``recommend:user_state:{user_id}`` with short_term, long_term, last_event_ts.
+Legacy key ``recommend:embedding:{user_id}`` (single list) is read once for migration then removed on save.
 """
 import json
 import logging
@@ -11,7 +12,7 @@ from typing import Protocol, runtime_checkable
 
 from redis.exceptions import ResponseError
 
-from app.models.schemas import Event
+from app.models.schemas import Event, UserVectorState
 from app.storage.redis_client import get_redis_client
 
 STREAM_KEY = "user:events:stream"
@@ -25,13 +26,50 @@ class UserStateStore(Protocol):
     def append_event(self, user_id: str, event: Event) -> None: ...
     def get_all_user_events(self, user_id: str) -> list[Event]: ...
     def list_user_summaries(self) -> list[tuple[str, int]]: ...
-    def get_user_embedding(self, user_id: str) -> list[float] | None: ...
-    def save_user_embedding(self, user_id: str, embedding: list[float]) -> None: ...
+    def get_user_vector_state(self, user_id: str) -> UserVectorState | None: ...
+    def save_user_vector_state(self, user_id: str, state: UserVectorState) -> None: ...
     def ensure_stream_consumer_group(self) -> None: ...
 
 
-def _emb_key(user_id: str) -> str:
+def _user_state_key(user_id: str) -> str:
+    return f"recommend:user_state:{user_id}"
+
+
+def _legacy_emb_key(user_id: str) -> str:
     return f"recommend:embedding:{user_id}"
+
+
+def _parse_user_state_payload(raw: str) -> UserVectorState | None:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, list):
+        return UserVectorState(
+            short_term_vector=list(map(float, data)),
+            long_term_vector=list(map(float, data)),
+            last_event_ts=None,
+        )
+    if not isinstance(data, dict):
+        return None
+    short = data.get("short_term_vector") or data.get("short")
+    long = data.get("long_term_vector") or data.get("long")
+    if not isinstance(short, list) or not isinstance(long, list):
+        return None
+    last = data.get("last_event_ts")
+    last_f: float | None
+    if last is None:
+        last_f = None
+    else:
+        try:
+            last_f = float(last)
+        except (TypeError, ValueError):
+            last_f = None
+    return UserVectorState(
+        short_term_vector=[float(x) for x in short],
+        long_term_vector=[float(x) for x in long],
+        last_event_ts=last_f,
+    )
 
 
 class RedisUserStateStore:
@@ -47,6 +85,7 @@ class RedisUserStateStore:
                 "item_id": event.item_id,
                 "event_type": event.event_type,
                 "timestamp": str(event.timestamp),
+                "query": event.query or "",
             },
         )
         logger.info(
@@ -71,6 +110,7 @@ class RedisUserStateStore:
                     item_id=fields["item_id"],
                     event_type=fields["event_type"],
                     timestamp=float(fields["timestamp"]),
+                    query=fields.get("query") or None,
                 )
             )
         return sorted(events, key=lambda e: (e.timestamp, e.item_id, e.event_type))
@@ -84,14 +124,38 @@ class RedisUserStateStore:
                 counts[uid] += 1
         return [(user_id, counts[user_id]) for user_id in sorted(counts)]
 
-    def get_user_embedding(self, user_id: str) -> list[float] | None:
-        raw = self._r.get(_emb_key(user_id))
-        if raw is None:
-            return None
-        return json.loads(raw)
+    def get_user_vector_state(self, user_id: str) -> UserVectorState | None:
+        raw = self._r.get(_user_state_key(user_id))
+        if raw is not None:
+            parsed = _parse_user_state_payload(raw)
+            if parsed is not None:
+                return parsed
 
-    def save_user_embedding(self, user_id: str, embedding: list[float]) -> None:
-        self._r.set(_emb_key(user_id), json.dumps(embedding))
+        legacy = self._r.get(_legacy_emb_key(user_id))
+        if legacy is None:
+            return None
+        try:
+            emb = json.loads(legacy)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(emb, list):
+            return None
+        vec = [float(x) for x in emb]
+        return UserVectorState(
+            short_term_vector=vec,
+            long_term_vector=list(vec),
+            last_event_ts=None,
+        )
+
+    def save_user_vector_state(self, user_id: str, state: UserVectorState) -> None:
+        payload = {
+            "short_term_vector": state.short_term_vector,
+            "long_term_vector": state.long_term_vector,
+            "last_event_ts": state.last_event_ts,
+        }
+        key = _user_state_key(user_id)
+        self._r.set(key, json.dumps(payload))
+        self._r.delete(_legacy_emb_key(user_id))
 
     def ensure_stream_consumer_group(self) -> None:
         try:
@@ -129,12 +193,12 @@ def list_user_summaries() -> list[tuple[str, int]]:
     return get_user_state().list_user_summaries()
 
 
-def get_user_embedding(user_id: str) -> list[float] | None:
-    return get_user_state().get_user_embedding(user_id)
+def get_user_vector_state(user_id: str) -> UserVectorState | None:
+    return get_user_state().get_user_vector_state(user_id)
 
 
-def save_user_embedding(user_id: str, embedding: list[float]) -> None:
-    get_user_state().save_user_embedding(user_id, embedding)
+def save_user_vector_state(user_id: str, state: UserVectorState) -> None:
+    get_user_state().save_user_vector_state(user_id, state)
 
 
 def ensure_stream_consumer_group() -> None:

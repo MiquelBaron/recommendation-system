@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: bitnami/postgresql:latest
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRESQL_DATABASE: recommender
+      POSTGRESQL_USERNAME: recommender
+      POSTGRESQL_PASSWORD: recommender
+    volumes:
+      - postgres_data:/bitnami/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U recommender -d recommender"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     ports:
@@ -20,8 +36,16 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "0"
+      POSTGRES_ENABLED: "1"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: recommender
+      POSTGRES_USER: recommender
+      POSTGRES_PASSWORD: recommender
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   worker:
@@ -31,11 +55,23 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "0"
+      POSTGRES_ENABLED: "1"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: recommender
+      POSTGRES_USER: recommender
+      POSTGRES_PASSWORD: recommender
+      SNAPSHOT_EVERY_EVENTS: "10"
+      RECOVERY_SNAPSHOT_LIMIT: "2000"
+      WORKER_METRICS_LOG_INTERVAL_SECONDS: "30"
     healthcheck:
       disable: true
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
 
 volumes:
   redis_data:
+  postgres_data:

@@ -6,6 +6,7 @@ from app.models.schemas import (
     UserSummaryDTO,
     UsersListResponse,
 )
+from app.storage.postgres_store import insert_event_durable
 from app.storage.catalog import ITEMS
 from app.storage.user_state import append_event, get_all_user_events, list_user_summaries
 
@@ -16,7 +17,10 @@ def register_event(payload: EventPayload) -> None:
         item_id=payload.item_id,
         event_type=payload.event_type,
         timestamp=payload.timestamp,
+        query=payload.query,
     )
+    # Durable write first (PostgreSQL), then enqueue for async processing.
+    insert_event_durable(event, source="api")
     append_event(event.user_id, event)
 
 
@@ -40,6 +44,7 @@ def get_user_events(user_id: str) -> UserEventsResponse:
                 item_name=ITEMS.get(e.item_id, ""),
                 event_type=e.event_type,
                 timestamp=e.timestamp,
+                query=e.query,
             )
             for e in events
         ],

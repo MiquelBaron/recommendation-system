@@ -3,12 +3,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router as api_router
-from app.seed.demo_users import seed_demo_stream_if_needed
+from app.seed.seed_examples import seed_example_data
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    seed_demo_stream_if_needed()
+    # Keep startup behavior, but call the centralized seed command entrypoint.
+    seed_example_data()
     yield
 
 
