@@ -32,6 +32,7 @@ EVENT_WEIGHTS = {
 }
 
 
+
 def embed_text(text: str) -> list[float]:
     embedding = _model.encode(text)
     return embedding.tolist()
